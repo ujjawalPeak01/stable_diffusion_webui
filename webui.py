@@ -345,7 +345,7 @@ def configure_cors_middleware(app):
 
 def create_api(app):
     from modules.api.api import Api
-    api = Api(app, queue_lock)
+    api = Api()
     return api
 
 
