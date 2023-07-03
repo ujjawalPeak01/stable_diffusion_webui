@@ -275,20 +275,19 @@ class Api:
         send_images = args.pop('send_images', True)
         args.pop('save_images', None)
 
-        with self.queue_lock:
-            p = StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)
-            p.scripts = script_runner
-            p.outpath_grids = opts.outdir_txt2img_grids
-            p.outpath_samples = opts.outdir_txt2img_samples
+        p = StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)
+        p.scripts = script_runner
+        p.outpath_grids = opts.outdir_txt2img_grids
+        p.outpath_samples = opts.outdir_txt2img_samples
 
-            shared.state.begin()
-            if selectable_scripts is not None:
-                p.script_args = script_args
-                processed = scripts.scripts_txt2img.run(p, *p.script_args) # Need to pass args as list here
-            else:
-                p.script_args = tuple(script_args) # Need to pass args as tuple here
-                processed = process_images(p)
-            shared.state.end()
+        shared.state.begin()
+        if selectable_scripts is not None:
+            p.script_args = script_args
+            processed = scripts.scripts_txt2img.run(p, *p.script_args) # Need to pass args as list here
+        else:
+            p.script_args = tuple(script_args) # Need to pass args as tuple here
+            processed = process_images(p)
+        shared.state.end()
 
         b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
 
@@ -331,21 +330,20 @@ class Api:
         send_images = args.pop('send_images', True)
         args.pop('save_images', None)
 
-        with self.queue_lock:
-            p = StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)
-            p.init_images = [decode_base64_to_image(x) for x in init_images]
-            p.scripts = script_runner
-            p.outpath_grids = opts.outdir_img2img_grids
-            p.outpath_samples = opts.outdir_img2img_samples
+        p = StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)
+        p.init_images = [decode_base64_to_image(x) for x in init_images]
+        p.scripts = script_runner
+        p.outpath_grids = opts.outdir_img2img_grids
+        p.outpath_samples = opts.outdir_img2img_samples
 
-            shared.state.begin()
-            if selectable_scripts is not None:
-                p.script_args = script_args
-                processed = scripts.scripts_img2img.run(p, *p.script_args) # Need to pass args as list here
-            else:
-                p.script_args = tuple(script_args) # Need to pass args as tuple here
-                processed = process_images(p)
-            shared.state.end()
+        shared.state.begin()
+        if selectable_scripts is not None:
+            p.script_args = script_args
+            processed = scripts.scripts_img2img.run(p, *p.script_args) # Need to pass args as list here
+        else:
+            p.script_args = tuple(script_args) # Need to pass args as tuple here
+            processed = process_images(p)
+        shared.state.end()
 
         b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
 
@@ -360,8 +358,7 @@ class Api:
 
         reqDict['image'] = decode_base64_to_image(reqDict['image'])
 
-        with self.queue_lock:
-            result = postprocessing.run_extras(extras_mode=0, image_folder="", input_dir="", output_dir="", save_output=False, **reqDict)
+        result = postprocessing.run_extras(extras_mode=0, image_folder="", input_dir="", output_dir="", save_output=False, **reqDict)
 
         return models.ExtrasSingleImageResponse(image=encode_pil_to_base64(result[0][0]), html_info=result[1])
 
@@ -371,8 +368,7 @@ class Api:
         image_list = reqDict.pop('imageList', [])
         image_folder = [decode_base64_to_image(x.data) for x in image_list]
 
-        with self.queue_lock:
-            result = postprocessing.run_extras(extras_mode=1, image_folder=image_folder, image="", input_dir="", output_dir="", save_output=False, **reqDict)
+        result = postprocessing.run_extras(extras_mode=1, image_folder=image_folder, image="", input_dir="", output_dir="", save_output=False, **reqDict)
 
         return models.ExtrasBatchImagesResponse(images=list(map(encode_pil_to_base64, result[0])), html_info=result[1])
 
@@ -428,14 +424,12 @@ class Api:
         img = decode_base64_to_image(image_b64)
         img = img.convert('RGB')
 
-        # Override object param
-        with self.queue_lock:
-            if interrogatereq.model == "clip":
-                processed = shared.interrogator.interrogate(img)
-            elif interrogatereq.model == "deepdanbooru":
-                processed = deepbooru.model.tag(img)
-            else:
-                raise HTTPException(status_code=404, detail="Model not found")
+        if interrogatereq.model == "clip":
+            processed = shared.interrogator.interrogate(img)
+        elif interrogatereq.model == "deepdanbooru":
+            processed = deepbooru.model.tag(img)
+        else:
+            raise HTTPException(status_code=404, detail="Model not found")
 
         return models.InterrogateResponse(caption=processed)
 

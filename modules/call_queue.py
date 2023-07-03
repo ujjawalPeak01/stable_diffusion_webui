@@ -9,8 +9,7 @@ queue_lock = threading.Lock()
 
 def wrap_queued_call(func):
     def f(*args, **kwargs):
-        with queue_lock:
-            res = func(*args, **kwargs)
+        res = func(*args, **kwargs)
 
         return res
 
@@ -27,17 +26,16 @@ def wrap_gradio_gpu_call(func, extra_outputs=None):
         else:
             id_task = None
 
-        with queue_lock:
-            shared.state.begin()
-            progress.start_task(id_task)
+        shared.state.begin()
+        progress.start_task(id_task)
 
-            try:
-                res = func(*args, **kwargs)
-                progress.record_results(id_task, res)
-            finally:
-                progress.finish_task(id_task)
+        try:
+            res = func(*args, **kwargs)
+            progress.record_results(id_task, res)
+        finally:
+            progress.finish_task(id_task)
 
-            shared.state.end()
+        shared.state.end()
 
         return res
 
