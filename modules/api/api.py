@@ -253,7 +253,7 @@ class Api:
         if not script_runner.scripts:
             script_runner.initialize_scripts(False)
             ui.create_ui()
-        if not self.default_script_arg_txt2img:
+        if hasattr(self, "default_script_arg_txt2img") is False:
             self.default_script_arg_txt2img = self.init_default_script_args(script_runner)
         selectable_scripts, selectable_script_idx = self.get_selectable_script(txt2imgreq.script_name, script_runner)
 
