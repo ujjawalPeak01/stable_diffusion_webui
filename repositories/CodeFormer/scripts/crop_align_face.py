@@ -21,7 +21,7 @@ import PIL.Image
 import scipy
 import scipy.ndimage
 import argparse
-from cfbasicsr.utils.download_util import load_file_from_url
+from basicsr.utils.download_util import load_file_from_url
 
 try:
     import dlib

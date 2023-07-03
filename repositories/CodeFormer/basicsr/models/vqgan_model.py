@@ -3,26 +3,21 @@ from collections import OrderedDict
 from os import path as osp
 from tqdm import tqdm
 
-from cfbasicsr.archs import build_network
-from cfbasicsr.metrics import calculate_metric
-from cfbasicsr.utils import get_root_logger, imwrite, tensor2img
-from cfbasicsr.utils.registry import MODEL_REGISTRY
+from basicsr.archs import build_network
+from basicsr.losses import build_loss
+from basicsr.metrics import calculate_metric
+from basicsr.utils import get_root_logger, imwrite, tensor2img
+from basicsr.utils.registry import MODEL_REGISTRY
 import torch.nn.functional as F
 from .sr_model import SRModel
 
 
 @MODEL_REGISTRY.register()
-class CodeFormerIdxModel(SRModel):
+class VQGANModel(SRModel):
     def feed_data(self, data):
         self.gt = data['gt'].to(self.device)
-        self.input = data['in'].to(self.device)
         self.b = self.gt.shape[0]
 
-        if 'latent_gt' in data:
-            self.idx_gt = data['latent_gt'].to(self.device)
-            self.idx_gt = self.idx_gt.view(self.b, -1)
-        else:
-            self.idx_gt = None
 
     def init_training_settings(self):
         logger = get_root_logger()
@@ -43,30 +38,62 @@ class CodeFormerIdxModel(SRModel):
                 self.model_ema(0)  # copy net_g weight
             self.net_g_ema.eval()
 
-        if self.opt['datasets']['train'].get('latent_gt_path', None) is not None:
-            self.generate_idx_gt = False
-        elif self.opt.get('network_vqgan', None) is not None:
-            self.hq_vqgan_fix = build_network(self.opt['network_vqgan']).to(self.device)
-            self.hq_vqgan_fix.eval()
-            self.generate_idx_gt = True
-            for param in self.hq_vqgan_fix.parameters():
-                param.requires_grad = False
-        else:
-            raise NotImplementedError(f'Shoule have network_vqgan config or pre-calculated latent code.')
-        
-        logger.info(f'Need to generate latent GT code: {self.generate_idx_gt}')
+        # define network net_d
+        self.net_d = build_network(self.opt['network_d'])
+        self.net_d = self.model_to_device(self.net_d)
+        self.print_network(self.net_d)
 
-        self.hq_feat_loss = train_opt.get('use_hq_feat_loss', True)
-        self.feat_loss_weight = train_opt.get('feat_loss_weight', 1.0)
-        self.cross_entropy_loss = train_opt.get('cross_entropy_loss', True)
-        self.entropy_loss_weight = train_opt.get('entropy_loss_weight', 0.5)
+        # load pretrained models
+        load_path = self.opt['path'].get('pretrain_network_d', None)
+        if load_path is not None:
+            self.load_network(self.net_d, load_path, self.opt['path'].get('strict_load_d', True))
 
         self.net_g.train()
+        self.net_d.train()
+
+        # define losses
+        if train_opt.get('pixel_opt'):
+            self.cri_pix = build_loss(train_opt['pixel_opt']).to(self.device)
+        else:
+            self.cri_pix = None
+
+        if train_opt.get('perceptual_opt'):
+            self.cri_perceptual = build_loss(train_opt['perceptual_opt']).to(self.device)
+        else:
+            self.cri_perceptual = None
+
+        if train_opt.get('gan_opt'):
+            self.cri_gan = build_loss(train_opt['gan_opt']).to(self.device)
+
+        if train_opt.get('codebook_opt'):
+            self.l_weight_codebook = train_opt['codebook_opt'].get('loss_weight', 1.0)
+        else:
+            self.l_weight_codebook = 1.0
+        
+        self.vqgan_quantizer = self.opt['network_g']['quantizer']
+        logger.info(f'vqgan_quantizer: {self.vqgan_quantizer}')
+
+        self.net_g_start_iter = train_opt.get('net_g_start_iter', 0)
+        self.net_d_iters = train_opt.get('net_d_iters', 1)
+        self.net_d_start_iter = train_opt.get('net_d_start_iter', 0)
+        self.disc_weight = train_opt.get('disc_weight', 0.8)
 
         # set up optimizers and schedulers
         self.setup_optimizers()
         self.setup_schedulers()
 
+    def calculate_adaptive_weight(self, recon_loss, g_loss, last_layer, disc_weight_max):
+        recon_grads = torch.autograd.grad(recon_loss, last_layer, retain_graph=True)[0]
+        g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
+
+        d_weight = torch.norm(recon_grads) / (torch.norm(g_grads) + 1e-4)
+        d_weight = torch.clamp(d_weight, 0.0, disc_weight_max).detach()
+        return d_weight
+
+    def adopt_weight(self, weight, global_step, threshold=0, value=0.):
+        if global_step < threshold:
+            weight = value
+        return weight
 
     def setup_optimizers(self):
         train_opt = self.opt['train']
@@ -81,59 +108,97 @@ class CodeFormerIdxModel(SRModel):
         optim_type = train_opt['optim_g'].pop('type')
         self.optimizer_g = self.get_optimizer(optim_type, optim_params_g, **train_opt['optim_g'])
         self.optimizers.append(self.optimizer_g)
+        # optimizer d
+        optim_type = train_opt['optim_d'].pop('type')
+        self.optimizer_d = self.get_optimizer(optim_type, self.net_d.parameters(), **train_opt['optim_d'])
+        self.optimizers.append(self.optimizer_d)
 
 
     def optimize_parameters(self, current_iter):
         logger = get_root_logger()
+        loss_dict = OrderedDict()
+        if self.opt['network_g']['quantizer'] == 'gumbel':
+            self.net_g.module.quantize.temperature = max(1/16, ((-1/160000) * current_iter) + 1)
+            if current_iter%1000 == 0:
+                logger.info(f'temperature: {self.net_g.module.quantize.temperature}')
+
         # optimize net_g
+        for p in self.net_d.parameters():
+            p.requires_grad = False
+
         self.optimizer_g.zero_grad()
+        self.output, l_codebook, quant_stats = self.net_g(self.gt)
 
-        if self.generate_idx_gt:
-            x = self.hq_vqgan_fix.encoder(self.gt)
-            _, _, quant_stats = self.hq_vqgan_fix.quantize(x)
-            min_encoding_indices = quant_stats['min_encoding_indices']
-            self.idx_gt = min_encoding_indices.view(self.b, -1)
-        
-        if self.hq_feat_loss:
-            # quant_feats
-            quant_feat_gt = self.net_g.module.quantize.get_codebook_feat(self.idx_gt, shape=[self.b,16,16,256])
-
-        logits, lq_feat = self.net_g(self.input, w=0, code_only=True)
+        l_codebook = l_codebook*self.l_weight_codebook
 
         l_g_total = 0
-        loss_dict = OrderedDict()
-        # hq_feat_loss
-        if self.hq_feat_loss: # codebook loss 
-            l_feat_encoder = torch.mean((quant_feat_gt.detach()-lq_feat)**2) * self.feat_loss_weight
-            l_g_total += l_feat_encoder
-            loss_dict['l_feat_encoder'] = l_feat_encoder
+        if current_iter % self.net_d_iters == 0 and current_iter > self.net_g_start_iter:
+            # pixel loss
+            if self.cri_pix:
+                l_g_pix = self.cri_pix(self.output, self.gt)
+                l_g_total += l_g_pix
+                loss_dict['l_g_pix'] = l_g_pix
+            # perceptual loss
+            if self.cri_perceptual:
+                l_g_percep = self.cri_perceptual(self.output, self.gt)
+                l_g_total += l_g_percep
+                loss_dict['l_g_percep'] = l_g_percep
 
-        # cross_entropy_loss
-        if self.cross_entropy_loss:
-            # b(hw)n -> bn(hw)
-            cross_entropy_loss = F.cross_entropy(logits.permute(0, 2, 1), self.idx_gt) * self.entropy_loss_weight
-            l_g_total += cross_entropy_loss
-            loss_dict['cross_entropy_loss'] = cross_entropy_loss
+            # gan loss
+            if current_iter > self.net_d_start_iter:
+                # fake_g_pred = self.net_d(self.output_1024)
+                fake_g_pred = self.net_d(self.output)
+                l_g_gan = self.cri_gan(fake_g_pred, True, is_disc=False)
+                recon_loss = l_g_total
+                last_layer = self.net_g.module.generator.blocks[-1].weight
+                d_weight = self.calculate_adaptive_weight(recon_loss, l_g_gan, last_layer, disc_weight_max=1.0)
+                d_weight *= self.adopt_weight(1, current_iter, self.net_d_start_iter)
+                d_weight *= self.disc_weight # tamming setting 0.8
+                l_g_total += d_weight * l_g_gan
+                loss_dict['l_g_gan'] = d_weight * l_g_gan
 
-        l_g_total.backward()
-        self.optimizer_g.step()
+            l_g_total += l_codebook
+            loss_dict['l_codebook'] = l_codebook
+
+            l_g_total.backward()
+            self.optimizer_g.step()
+
+        # optimize net_d
+        if  current_iter > self.net_d_start_iter:
+            for p in self.net_d.parameters():
+                p.requires_grad = True
+
+            self.optimizer_d.zero_grad()
+            # real
+            real_d_pred = self.net_d(self.gt)
+            l_d_real = self.cri_gan(real_d_pred, True, is_disc=True)
+            loss_dict['l_d_real'] = l_d_real
+            loss_dict['out_d_real'] = torch.mean(real_d_pred.detach())
+            l_d_real.backward()
+            # fake
+            fake_d_pred = self.net_d(self.output.detach())
+            l_d_fake = self.cri_gan(fake_d_pred, False, is_disc=True)
+            loss_dict['l_d_fake'] = l_d_fake
+            loss_dict['out_d_fake'] = torch.mean(fake_d_pred.detach())
+            l_d_fake.backward()
+            self.optimizer_d.step()
+
+        self.log_dict = self.reduce_loss_dict(loss_dict)
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
-
-        self.log_dict = self.reduce_loss_dict(loss_dict)
 
 
     def test(self):
         with torch.no_grad():
             if hasattr(self, 'net_g_ema'):
                 self.net_g_ema.eval()
-                self.output, _, _ = self.net_g_ema(self.input, w=0)
+                self.output, _, _ = self.net_g_ema(self.gt)
             else:
                 logger = get_root_logger()
                 logger.warning('Do not have self.net_g_ema, use self.net_g.')
                 self.net_g.eval()
-                self.output, _, _ = self.net_g(self.input, w=0)
+                self.output, _, _ = self.net_g(self.gt)
                 self.net_g.train()
 
 
@@ -211,10 +276,10 @@ class CodeFormerIdxModel(SRModel):
         out_dict['result'] = self.output.detach().cpu()
         return out_dict
 
-
     def save(self, epoch, current_iter):
         if self.ema_decay > 0:
             self.save_network([self.net_g, self.net_g_ema], 'net_g', current_iter, param_key=['params', 'params_ema'])
         else:
             self.save_network(self.net_g, 'net_g', current_iter)
+        self.save_network(self.net_d, 'net_d', current_iter)
         self.save_training_state(epoch, current_iter)
