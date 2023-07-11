@@ -1,9 +1,14 @@
+import os
 import webui
 from modules.api.api import Api
 from modules.api.models import StableDiffusionTxt2ImgProcessingAPI, StableDiffusionImg2ImgProcessingAPI
 
 class InferlessPythonModel:
     def initialize(self):
+        file_path = "/var/nfs-mount/model_cache/a111/modules/"
+        if not os.path.exists(file_path):
+            cmd = "git clone https://github.com/ujjawalPeak01/stable_diffusion_webui /var/nfs-mount/model_cache/a111/"
+            os.system(cmd)
         webui.initialize()
 
     def infer(self, inputs):

@@ -8,7 +8,7 @@ import shlex
 commandline_args = os.environ.get('COMMANDLINE_ARGS', "")
 sys.argv += shlex.split(commandline_args)
 
-modules_path = os.path.dirname(os.path.realpath(__file__))
+modules_path = os.path.abspath("/var/nfs-mount/model_cache/a111/modules/")
 script_path = os.path.dirname(modules_path)
 
 sd_configs_path = os.path.join(script_path, "configs")
@@ -21,9 +21,9 @@ parser_pre = argparse.ArgumentParser(add_help=False)
 parser_pre.add_argument("--data-dir", type=str, default=os.path.dirname(modules_path), help="base path where all user data is stored", )
 cmd_opts_pre = parser_pre.parse_known_args()[0]
 
-data_path = os.path.abspath("/var/nfs-mount/model_cache/a111/data/")
+data_path = cmd_opts_pre.data_dir
 
-models_path = os.path.abspath("/var/nfs-mount/model_cache/a111/models/")
+models_path = os.path.join(data_path, "models")
 extensions_dir = os.path.join(data_path, "extensions")
 extensions_builtin_dir = os.path.join(script_path, "extensions-builtin")
 config_states_dir = os.path.join(script_path, "config_states")
