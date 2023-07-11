@@ -8,7 +8,11 @@ import shlex
 commandline_args = os.environ.get('COMMANDLINE_ARGS', "")
 sys.argv += shlex.split(commandline_args)
 
-modules_path = os.path.abspath("/var/nfs-mount/model_cache/a111/modules/")
+if os.path.exists("/var/nfs-mount/model_cache/a111/modules/"):
+    modules_path = os.path.abspath("/var/nfs-mount/model_cache/a111/modules/")
+else:
+    modules_path = os.path.abspath(os.path.dirname(__file__))
+
 script_path = os.path.dirname(modules_path)
 
 sd_configs_path = os.path.join(script_path, "configs")
