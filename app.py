@@ -9,6 +9,7 @@ class InferlessPythonModel:
     def infer(self, prompt):
         api = Api()
         arg = StableDiffusionTxt2ImgProcessingAPI(prompt=prompt)
+        response = api.text2imgapi(txt2imgreq=arg)
         result = {}
         print(response.images[0], flush=True)
         result["generated_image_base64"] = response.images[0]
