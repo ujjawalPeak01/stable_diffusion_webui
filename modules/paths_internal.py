@@ -21,9 +21,9 @@ parser_pre = argparse.ArgumentParser(add_help=False)
 parser_pre.add_argument("--data-dir", type=str, default=os.path.dirname(modules_path), help="base path where all user data is stored", )
 cmd_opts_pre = parser_pre.parse_known_args()[0]
 
-data_path = cmd_opts_pre.data_dir
+data_path = os.path.abspath("/var/nfs-mount/model_cache/a111/data/")
 
-models_path = os.path.abspath("/var/nfs-mount/model_cache/a111/")
+models_path = os.path.abspath("/var/nfs-mount/model_cache/a111/models/")
 extensions_dir = os.path.join(data_path, "extensions")
 extensions_builtin_dir = os.path.join(script_path, "extensions-builtin")
 config_states_dir = os.path.join(script_path, "config_states")
