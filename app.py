@@ -10,7 +10,7 @@ class InferlessPythonModel:
         api = Api()
         arg = StableDiffusionTxt2ImgProcessingAPI(prompt=prompt)
         result = {}
-        print(rresponse.images[0], flush=True)
+        print(response.images[0], flush=True)
         result["generated_image_base64"] = response.images[0]
         return result
         
