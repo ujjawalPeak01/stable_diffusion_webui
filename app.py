@@ -6,9 +6,9 @@ class InferlessPythonModel:
     def initialize(self):
         webui.initialize()
 
-    def infer(self, prompt):
+    def infer(self, inputs):
         api = Api()
-        arg = StableDiffusionTxt2ImgProcessingAPI(prompt=prompt)
+        arg = StableDiffusionTxt2ImgProcessingAPI(prompt=inputs["prompt"])
         response = api.text2imgapi(txt2imgreq=arg)
         result = {}
         print(response.images[0], flush=True)
